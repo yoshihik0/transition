@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGL Transition</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- WebGL キャンバス -->
+  <canvas id="webgl"></canvas>
+
+  <!-- UI オーバーレイ -->
+  <div id="ui">
+    <nav>
+      <button data-index="0">01</button>
+      <button data-index="1">02</button>
+      <button data-index="2">03</button>
+    </nav>
+  </div>
+
+  <!-- シェーダー: 頂点 -->
+  <script id="vertexShader" type="x-shader/x-vertex">
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  </script>
+
+  <!-- シェーダー: フラグメント（波形歪み） -->
+  <script id="fragmentShader" type="x-shader/x-fragment">
+    uniform sampler2D uTexture1;
+    uniform sampler2D uTexture2;
+    uniform float uProgress;
+    uniform float uDistortion;
+    uniform vec2 uResolution;
+
+    varying vec2 vUv;
+
+    void main() {
+      vec2 uv = vUv;
+
+      // 波形歪み: progress に合わせて正弦波でUVをずらす
+      float wave1 = sin(uv.y * 8.0 + uProgress * 3.14159 * 2.0) * uDistortion * (1.0 - uProgress);
+      float wave2 = sin(uv.y * 8.0 - uProgress * 3.14159 * 2.0) * uDistortion * uProgress;
+
+      vec2 uv1 = uv + vec2(wave1, 0.0);
+      vec2 uv2 = uv + vec2(wave2, 0.0);
+
+      vec4 tex1 = texture2D(uTexture1, uv1);
+      vec4 tex2 = texture2D(uTexture2, uv2);
+
+      gl_FragColor = mix(tex1, tex2, uProgress);
+    }
+  </script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
