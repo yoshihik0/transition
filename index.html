@@ -8,10 +8,8 @@
 </head>
 <body>
 
-  <!-- WebGL キャンバス -->
   <canvas id="webgl"></canvas>
 
-  <!-- UI オーバーレイ -->
   <div id="ui">
     <nav>
       <button data-index="0">01</button>
@@ -20,7 +18,7 @@
     </nav>
   </div>
 
-  <!-- シェーダー: 頂点 -->
+  <!-- 頂点シェーダー -->
   <script id="vertexShader" type="x-shader/x-vertex">
     varying vec2 vUv;
     void main() {
@@ -29,30 +27,100 @@
     }
   </script>
 
-  <!-- シェーダー: フラグメント（波形歪み） -->
+  <!-- フラグメントシェーダー: Simplex Noise + ページめくり歪み -->
   <script id="fragmentShader" type="x-shader/x-fragment">
     uniform sampler2D uTexture1;
     uniform sampler2D uTexture2;
     uniform float uProgress;
-    uniform float uDistortion;
-    uniform vec2 uResolution;
+    uniform float uTime;
 
     varying vec2 vUv;
+
+    // ── Simplex Noise 2D ────────────────────────────────────────
+    vec3 mod289v3(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+    vec2 mod289v2(vec2 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+    vec3 permute(vec3 x) { return mod289v3(((x * 34.0) + 1.0) * x); }
+
+    float snoise(vec2 v) {
+      const vec4 C = vec4(
+        0.211324865405187,
+        0.366025403784439,
+       -0.577350269189626,
+        0.024390243902439
+      );
+      vec2 i  = floor(v + dot(v, C.yy));
+      vec2 x0 = v - i + dot(i, C.xx);
+      vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+      vec4 x12 = x0.xyxy + C.xxzz;
+      x12.xy -= i1;
+      i = mod289v2(i);
+      vec3 p = permute(
+        permute(i.y + vec3(0.0, i1.y, 1.0))
+              + i.x + vec3(0.0, i1.x, 1.0)
+      );
+      vec3 m = max(0.5 - vec3(
+        dot(x0,  x0),
+        dot(x12.xy, x12.xy),
+        dot(x12.zw, x12.zw)
+      ), 0.0);
+      m = m * m * m * m;
+      vec3 x  = 2.0 * fract(p * C.www) - 1.0;
+      vec3 h  = abs(x) - 0.5;
+      vec3 ox = floor(x + 0.5);
+      vec3 a0 = x - ox;
+      m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+      vec3 g;
+      g.x  = a0.x  * x0.x   + h.x  * x0.y;
+      g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+      return 130.0 * dot(m, g);
+    }
+    // ────────────────────────────────────────────────────────────
 
     void main() {
       vec2 uv = vUv;
 
-      // 波形歪み: progress に合わせて正弦波でUVをずらす
-      float wave1 = sin(uv.y * 8.0 + uProgress * 3.14159 * 2.0) * uDistortion * (1.0 - uProgress);
-      float wave2 = sin(uv.y * 8.0 - uProgress * 3.14159 * 2.0) * uDistortion * uProgress;
+      // ── 常時: ごく微かに息をするような歪み ──────────────────
+      float ambient = snoise(uv * 2.0 + uTime * 0.08) * 0.004;
+      uv += ambient;
 
-      vec2 uv1 = uv + vec2(wave1, 0.0);
-      vec2 uv2 = uv + vec2(wave2, 0.0);
+      // ── 折り目ラインの位置 (左→右 にスイープ) ───────────────
+      // トランジション中だけ動く: progress 0→1
+      float foldX = uProgress;
 
-      vec4 tex1 = texture2D(uTexture1, uv1);
-      vec4 tex2 = texture2D(uTexture2, uv2);
+      // 折り目エッジに有機的なノイズを乗せる (ガタガタした形に)
+      float en1 = snoise(vec2(uv.y * 5.0 + uTime * 0.35,  uProgress * 6.0)) * 0.045;
+      float en2 = snoise(vec2(uv.y * 11.0 - uTime * 0.55, uProgress * 10.0)) * 0.018;
+      float edgeNoise = en1 + en2;
 
-      gl_FragColor = mix(tex1, tex2, uProgress);
+      // 折り目からの距離 (正=新ページ側, 負=旧ページ側)
+      float d = uv.x - foldX - edgeNoise;
+
+      // ── カール歪み: 折り目付近だけ強くなる ──────────────────
+      float proximity = exp(-abs(d) * 14.0);
+
+      float cx = snoise(uv * vec2(3.5, 5.5) + uTime * 0.22) * proximity * 0.07;
+      float cy = snoise(uv * vec2(5.5, 3.5) - uTime * 0.18) * proximity * 0.07;
+
+      vec2 warpedUv = clamp(uv + vec2(cx, cy), 0.001, 0.999);
+
+      // ── テクスチャサンプリング ────────────────────────────────
+      vec4 tex1 = texture2D(uTexture1, warpedUv);
+      vec4 tex2 = texture2D(uTexture2, warpedUv);
+
+      // 折り目でシャープに切り替え (エッジノイズ込みで既にガタガタ)
+      float blend = smoothstep(-0.004, 0.004, d);
+      vec4 color  = mix(tex1, tex2, blend);
+
+      // ── 折り目の影と光沢 ─────────────────────────────────────
+      // トランジション中間 (progress≈0.5) が最も強い
+      float phase   = sin(uProgress * 3.14159);
+      float shadow  = proximity * 0.45 * phase;
+      float specular = exp(-abs(d) * 45.0) * 0.22 * phase;
+
+      color.rgb *= (1.0 - shadow);
+      color.rgb += specular;
+
+      gl_FragColor = color;
     }
   </script>
 
